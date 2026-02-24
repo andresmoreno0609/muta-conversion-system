@@ -1,65 +1,73 @@
 # muta-conversion-system 🔄
 
-**Muta Conversion System** es un motor de cálculo robusto diseñado para gestionar la conversión bidireccional de medidas de materiales. El sistema garantiza la integridad de los datos financieros y logísticos al normalizar diversas unidades de entrada (Masa y Volumen) hacia una unidad base estandarizada en la base de datos (**Kilogramos**).
+**Muta Conversion System** es un motor de cálculo avanzado diseñado para gestionar la conversión bidireccional de medidas de materiales. El sistema garantiza la integridad de los datos financieros y logísticos al normalizar diversas unidades de entrada (Masa y Volumen) hacia una unidad base estandarizada en la base de datos (**Kilogramos**).
 
 ## 🚀 Propósito del Sistema
 
-En la gestión de residuos y materiales, los registros pueden ocurrir en múltiples unidades según el país o el tipo de cliente. Este sistema:
-1.  **Normaliza** las entradas de la App hacia la Base de Datos (App -> BD).
-2.  **Traduce** los datos de la Base de Datos para visualización personalizada (BD -> App).
-3.  **Protege** la precisión decimal mediante el uso exclusivo de `BigDecimal`.
+En la gestión de residuos y materiales, los registros pueden ocurrir en múltiples unidades. Este sistema:
+1.  **Normaliza** las entradas (App -> BD): Convierte cualquier unidad a KG para almacenamiento.
+2.  **Traduce** las salidas (BD -> App): Convierte de KG a la unidad preferida del usuario para visualización.
+3.  **Protege** la precisión financiera mediante el uso estricto de `BigDecimal`.
 
 ---
 
 ## 🏗️ Arquitectura de Conversión
 
-El sistema implementa el patrón **Strategy**, permitiendo que cada unidad de medida gestione su propia lógica matemática y reglas de redondeo.
+El sistema implementa el patrón **Strategy**, permitiendo que cada unidad de medida gestione su propia lógica matemática.
 
-### Estrategias de Conversión Soportadas
+### Unidades Soportadas y Factores
 
-| Unidad | Clase | Tipo | Comportamiento |
+| Unidad | Clase | Tipo | Factor / Base |
 | :--- | :--- | :--- | :--- |
-| **KG** | `KgStrategy` | Masa | Unidad base (Identidad 1:1) |
-| **LB** | `LbStrategy` | Masa | Conversión mediante factor 0.45359237 |
-| **TON** | `TonKgStrategy` | Masa | Conversión mediante factor 1000.0 |
-| **L** | `LStrategy` | Volumen | Conversión basada en **Densidad** del material |
-| **GAL US** | `GalUsStrategy` | Volumen | Galón Americano (3.78541 L) + Densidad |
-| **GAL UK** | `GalUkStrategy` | Volumen | Galón Británico (4.54609 L) + Densidad |
-| **UNI** | `UnitStrategy` | Conteo | Manejo de piezas o unidades físicas |
+| **KG** | `KgStrategy` | Masa | **Unidad Base (1:1)** |
+| **LB** | `LbStrategy` | Masa | 0.45359237 |
+| **TON** | `TonKgStrategy` | Masa | 1000.0 |
+| **L** | `LStrategy` | Volumen | Basado en Densidad |
+| **GAL US** | `GalUsStrategy` | Volumen | 3.78541 L + Densidad |
+| **GAL UK** | `GalUkStrategy` | Volumen | 4.54609 L + Densidad |
+| **UNI** | `UnitStrategy` | Conteo | Piezas (Sin conversión) |
 
 ---
 
-## 📦 Lógica de Contenedores vs. Materiales
+## ⚠️ Regla de Oro: Contingencia para Medidas Inexistentes
 
-Una de las características críticas de este sistema es la discriminación basada en el tipo de carga (`isContainer`):
+El sistema es tolerante a errores de configuración. Si un usuario o licencia intenta utilizar una unidad de medida que no existe en nuestro sistema (ejemplo: "LT" en lugar de "L", "Bolsas", "Cajas"), el `ConversionContextService` aplicará la siguiente lógica:
 
-### Caso A: Material a Granel (`isContainer = false`)
-Se realiza una conversión integral. Si el usuario cambia de KG a Libras:
-* La **Cantidad** aumenta.
-* El **Peso Neto** aumenta.
-* El **Precio Unitario** disminuye proporcionalmente.
-* El **Subtotal** se recalcula para mantener la consistencia.
+> **Si la unidad es desconocida o nula, se trabajará automáticamente como KG.**
 
-### Caso B: Contenedor Logístico (`isContainer = true`)
-Diseñado para registros tipo "Barriles", "Cajas" o "IBCs":
-* **Quantity Collected**: No se convierte (se mantiene el conteo de envases).
-* **Unit Price**: No se convierte (el precio es por envase, no por peso).
-* **Net Quantity**: **Sí se convierte** (se requiere saber el peso real del contenido en la unidad destino).
-* **Subtotal**: Se calcula directamente como `Quantity * UnitPrice`.
-
-
+Esto evita que la aplicación se rompa y asegura que el valor se procese bajo la unidad de masa estándar por defecto, garantizando que el subtotal y el peso neto sigan siendo coherentes.
 
 ---
 
-## 🛠️ Componentes Técnicos
+## 📦 Casos de Uso y Ejemplos de Estrategias
 
-### 1. ConversionContextService
-El orquestador del sistema. Se encarga de:
-* Identificar la estrategia correcta mediante el `targetUnit`.
-* Aplicar **Fallbacks**: Si una unidad no existe (ej. "LT"), el sistema redirige automáticamente a **KG** para evitar fallos en la transacción.
-* Priorizar la unidad **UNI** sobre configuraciones globales si el material lo requiere.
+El comportamiento del sistema varía drásticamente si el material es un **Contenedor** o un **Material a Granel**.
 
-### 2. Manejo de Densidad
-Para las estrategias de volumen (`L`, `GAL`), el sistema inyecta dinámicamente la densidad del material:
+### Caso 1: Material Estándar (`isContainer = false`)
+Se convierte **todo**: cantidad, peso neto y precio unitario.
+
+* **Ejemplo (Salida de BD a App - Conversión a Libras):**
+    * **BD**: 100 KG | Precio: $2.00/KG | Subtotal: $200.00
+    * **App (LB)**: 220.46 LB | Precio: $0.91/LB | Subtotal: $200.00
+    * *Resultado: El valor monetario se mantiene, pero se traduce a la escala de libras.*
+
+* **Ejemplo (Entrada de App a BD - Conversión de Litros a KG con Densidad 0.8):**
+    * **App**: 100 L | Precio: $1.50/L | Subtotal: $150.00
+    * **BD (KG)**: 80.00 KG | Precio: $1.875/KG | Subtotal: $150.00
+
+### Caso 2: Contenedor Logístico (`isContainer = true`)
+Se protege la unidad comercial (Quantity y Price) y solo se convierte la masa (Net Quantity).
+
+* **Ejemplo (Salida de BD a App - Conversión a Galones con Densidad 1.1):**
+    * **BD**: 10 Tambores | Peso Neto: 1000 KG | Precio: $50.00/Tambor | Subtotal: $500.00
+    * **App (GAL)**: 10 Tambores | Peso Neto: 239.89 GAL | Precio: $50.00/Tambor | Subtotal: $500.00
+    * *Resultado: El usuario sigue viendo "10 Tambores", pero el peso del contenido se muestra en la unidad de volumen deseada.*
+
+---
+
+## 🛠️ Detalles Técnicos
+
+### 1. Manejo de Densidad
+Para las estrategias de volumen (`L`, `GAL`), el sistema extrae la densidad directamente del material asociado:
 ```java
-BigDecimal density = material.getDensity(); // Ejemplo: 0.9 para aceites
+BigDecimal density = material.getDensity();
