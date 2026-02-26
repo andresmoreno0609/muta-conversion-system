@@ -3,18 +3,24 @@ package com.sistem.conversion.strategy;
 import com.sistem.conversion.dto.DTOConvert;
 import com.sistem.conversion.entity.CollectionMaterial;
 import com.sistem.conversion.enums.ConversionUnit;
+import com.sistem.conversion.utils.PrecisionMath;
 import org.springframework.stereotype.Component;
-
 import java.math.BigDecimal;
-import java.math.RoundingMode;
+import org.apache.commons.math3.fraction.BigFraction;
+import java.math.BigInteger;
 
 @Component
 public class TonLbStrategy implements ConversionStrategy {
 
-    // Factor: 1 Tonelada (US/Short) = 2000 Libras
-    // Factor Libras a KG: 0.45359237
-    private static final BigDecimal TON_LB_FACTOR = new BigDecimal("2000");
-    private static final BigDecimal LB_TO_KG = new BigDecimal("0.45359237");
+    // Factor LB a KG: 0.45359237
+    private static final BigFraction LB_TO_KG = new BigFraction(
+            new BigInteger("45359237"), new BigInteger("100000000"));
+
+    // Factor TON a LB: 2000
+    private static final BigFraction TON_TO_LB = new BigFraction(new BigInteger("2000"), BigInteger.ONE);
+
+    // Factor Combinado TON_LB a KG = 2000 * 0.45359237
+    private static final BigFraction TON_LB_TO_KG = TON_TO_LB.multiply(LB_TO_KG);
 
     @Override
     public boolean appliesTo(ConversionUnit targetUnit) {
@@ -23,54 +29,41 @@ public class TonLbStrategy implements ConversionStrategy {
 
     @Override
     public DTOConvert execute(CollectionMaterial entity, ConversionUnit targetUnit, boolean isExiting) {
-        BigDecimal rawQty = BigDecimal.valueOf(entity.getQuantityCollected());
-        BigDecimal rawNet = BigDecimal.valueOf(entity.getNetQuantityCollected());
-        BigDecimal rawPrice = BigDecimal.valueOf(entity.getUnitPrice());
+        // 1. Preparación de entradas
+        BigFraction rawQty = PrecisionMath.fromBigDecimal(BigDecimal.valueOf(entity.getQuantityCollected()));
+        BigFraction rawNet = PrecisionMath.fromBigDecimal(BigDecimal.valueOf(entity.getNetQuantityCollected()));
+        BigFraction rawPrice = PrecisionMath.fromBigDecimal(BigDecimal.valueOf(entity.getUnitPrice()));
 
-        BigDecimal finalQty, finalNet, finalPrice, finalSubtotal;
+        BigFraction finalQty, finalNet, finalPrice;
+        boolean isContainer = Boolean.TRUE.equals(entity.getContainer());
 
-        if (entity.getContainer() != null && entity.getContainer()) {
-            // Contenedor: Convertimos peso neto (KG <-> TON LB)
-            // KG -> LB -> TON LB
-            if (isExiting) {
-                BigDecimal lbs = rawNet.divide(LB_TO_KG, 10, RoundingMode.HALF_UP);
-                finalNet = lbs.divide(TON_LB_FACTOR, 10, RoundingMode.HALF_UP);
-            } else {
-                BigDecimal lbs = rawNet.multiply(TON_LB_FACTOR);
-                finalNet = lbs.multiply(LB_TO_KG);
-            }
+        // 2. Lógica de conversión
+        if (isContainer) {
             finalQty = rawQty;
             finalPrice = rawPrice;
-            finalSubtotal = finalQty.multiply(finalPrice);
+            // isExiting: KG -> LB -> TON (Dividir por el factor combinado)
+            finalNet = isExiting ? rawNet.divide(TON_LB_TO_KG) : rawNet.multiply(TON_LB_TO_KG);
         } else {
-            // Material Normal: Conversión total
-            if (isExiting) {
-                // De KG a TON LB
-                BigDecimal lbs = rawQty.divide(LB_TO_KG, 10, RoundingMode.HALF_UP);
-                finalQty = lbs.divide(TON_LB_FACTOR, 10, RoundingMode.HALF_UP);
-
-                BigDecimal netLbs = rawNet.divide(LB_TO_KG, 10, RoundingMode.HALF_UP);
-                finalNet = netLbs.divide(TON_LB_FACTOR, 10, RoundingMode.HALF_UP);
-
-                finalPrice = rawPrice.multiply(LB_TO_KG).multiply(TON_LB_FACTOR);
-            } else {
-                // De TON LB a KG
-                BigDecimal lbs = rawQty.multiply(TON_LB_FACTOR);
-                finalQty = lbs.multiply(LB_TO_KG);
-
-                BigDecimal netLbs = rawNet.multiply(TON_LB_FACTOR);
-                finalNet = netLbs.multiply(LB_TO_KG);
-
-                finalPrice = rawPrice.divide(TON_LB_FACTOR, 10, RoundingMode.HALF_UP).divide(LB_TO_KG, 10, RoundingMode.HALF_UP);
+            if (isExiting) { // SALIDA: BD(KG) -> APP(TON LB)
+                finalQty = rawQty.divide(TON_LB_TO_KG);
+                finalNet = rawNet.divide(TON_LB_TO_KG);
+                finalPrice = rawPrice.multiply(TON_LB_TO_KG);
+            } else { // ENTRADA: APP(TON LB) -> BD(KG)
+                finalQty = rawQty.multiply(TON_LB_TO_KG);
+                finalNet = rawNet.multiply(TON_LB_TO_KG);
+                finalPrice = rawPrice.divide(TON_LB_TO_KG);
             }
-            finalSubtotal = finalQty.multiply(finalPrice);
         }
 
+        // 3. Subtotal exacto
+        BigFraction finalSubtotal = finalQty.multiply(finalPrice);
+
+        // 4. Salida con Snap
         return DTOConvert.builder()
-                .quantityCollected(finalQty.setScale(3, RoundingMode.HALF_UP).doubleValue())
-                .netQuantityCollected(finalNet.setScale(3, RoundingMode.HALF_UP).doubleValue())
-                .unitPrice(finalPrice.setScale(2, RoundingMode.HALF_UP).doubleValue())
-                .subtotal(finalSubtotal.setScale(2, RoundingMode.HALF_UP).doubleValue())
+                .quantityCollected(PrecisionMath.toDecimal(finalQty, 3).doubleValue())
+                .netQuantityCollected(PrecisionMath.toDecimal(finalNet, 3).doubleValue())
+                .unitPrice(PrecisionMath.toDecimal(finalPrice, 2).doubleValue())
+                .subtotal(PrecisionMath.toDecimal(finalSubtotal, 2).doubleValue())
                 .measureLabel(isExiting ? ConversionUnit.TONLB.name() : ConversionUnit.KG.name())
                 .build();
     }

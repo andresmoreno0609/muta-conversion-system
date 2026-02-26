@@ -3,13 +3,17 @@ package com.sistem.conversion.strategy;
 import com.sistem.conversion.dto.DTOConvert;
 import com.sistem.conversion.entity.CollectionMaterial;
 import com.sistem.conversion.enums.ConversionUnit;
+import com.sistem.conversion.utils.PrecisionMath;
 import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
+import org.apache.commons.math3.fraction.BigFraction;
+import java.math.BigInteger;
+
 @Component
 public class UkGalStrategy implements ConversionStrategy {
 
-    private static final BigDecimal GAL_UK_TO_L = new BigDecimal("4.54609");
+    private static final BigFraction GAL_UK_TO_L = new BigFraction(
+            new BigInteger("454609"), new BigInteger("100000"));
 
     @Override
     public boolean appliesTo(ConversionUnit targetUnit) {
@@ -18,50 +22,40 @@ public class UkGalStrategy implements ConversionStrategy {
 
     @Override
     public DTOConvert execute(CollectionMaterial entity, ConversionUnit targetUnit, boolean isExiting) {
-        BigDecimal density = (entity.getMaterial() != null && entity.getMaterial().getDensity() != null &&
-                entity.getMaterial().getDensity().compareTo(BigDecimal.ZERO) > 0)
-                ? entity.getMaterial().getDensity()
-                : BigDecimal.ONE;
+        // 1. Obtención centralizada de densidad y valores base
+        BigFraction density = PrecisionMath.getSafeDensity(entity);
+        BigFraction rawQty = PrecisionMath.fromBigDecimal(BigDecimal.valueOf(entity.getQuantityCollected()));
+        BigFraction rawNet = PrecisionMath.fromBigDecimal(BigDecimal.valueOf(entity.getNetQuantityCollected()));
+        BigFraction rawPrice = PrecisionMath.fromBigDecimal(BigDecimal.valueOf(entity.getUnitPrice()));
 
-        BigDecimal rawQty = BigDecimal.valueOf(entity.getQuantityCollected());
-        BigDecimal rawNet = BigDecimal.valueOf(entity.getNetQuantityCollected());
-        BigDecimal rawPrice = BigDecimal.valueOf(entity.getUnitPrice());
+        BigFraction finalQty, finalNet, finalPrice;
+        boolean isContainer = Boolean.TRUE.equals(entity.getContainer());
 
-        BigDecimal finalQty, finalNet, finalPrice, finalSubtotal;
-
-        if (entity.getContainer() != null && entity.getContainer()) {
-            // Contenedor: Solo peso neto (KG -> L -> GAL UK)
-            if (isExiting) {
-                BigDecimal liters = rawNet.multiply(density);
-                finalNet = liters.divide(GAL_UK_TO_L, 10, RoundingMode.HALF_UP);
-            } else {
-                BigDecimal liters = rawNet.multiply(GAL_UK_TO_L);
-                finalNet = liters.divide(density, 10, RoundingMode.HALF_UP);
-            }
+        // 2. Lógica de Conversión
+        if (isContainer) {
             finalQty = rawQty;
             finalPrice = rawPrice;
-            finalSubtotal = finalQty.multiply(finalPrice);
+            finalNet = isExiting ? rawNet.divide(density).divide(GAL_UK_TO_L)
+                    : rawNet.multiply(GAL_UK_TO_L).multiply(density);
         } else {
-            // Material Normal: Conversión total
             if (isExiting) {
-                BigDecimal liters = rawQty.multiply(density);
-                finalQty = liters.divide(GAL_UK_TO_L, 10, RoundingMode.HALF_UP);
-                finalNet = rawNet.multiply(density).divide(GAL_UK_TO_L, 10, RoundingMode.HALF_UP);
-                finalPrice = rawPrice.divide(density, 10, RoundingMode.HALF_UP).multiply(GAL_UK_TO_L);
+                finalQty = rawQty.divide(density).divide(GAL_UK_TO_L);
+                finalNet = rawNet.divide(density).divide(GAL_UK_TO_L);
+                finalPrice = rawPrice.multiply(density).multiply(GAL_UK_TO_L);
             } else {
-                BigDecimal liters = rawQty.multiply(GAL_UK_TO_L);
-                finalQty = liters.divide(density, 10, RoundingMode.HALF_UP);
-                finalNet = rawNet.multiply(GAL_UK_TO_L).divide(density, 10, RoundingMode.HALF_UP);
-                finalPrice = rawPrice.divide(GAL_UK_TO_L, 10, RoundingMode.HALF_UP).multiply(density);
+                finalQty = rawQty.multiply(GAL_UK_TO_L).multiply(density);
+                finalNet = rawNet.multiply(GAL_UK_TO_L).multiply(density);
+                finalPrice = rawPrice.divide(GAL_UK_TO_L).divide(density);
             }
-            finalSubtotal = finalQty.multiply(finalPrice);
         }
 
+        BigFraction finalSubtotal = finalQty.multiply(finalPrice);
+
         return DTOConvert.builder()
-                .quantityCollected(finalQty.setScale(2, RoundingMode.HALF_UP).doubleValue())
-                .netQuantityCollected(finalNet.setScale(2, RoundingMode.HALF_UP).doubleValue())
-                .unitPrice(finalPrice.setScale(6, RoundingMode.HALF_UP).doubleValue())
-                .subtotal(finalSubtotal.setScale(2, RoundingMode.HALF_UP).doubleValue())
+                .quantityCollected(PrecisionMath.toDecimal(finalQty, 3).doubleValue())
+                .netQuantityCollected(PrecisionMath.toDecimal(finalNet, 3).doubleValue())
+                .unitPrice(PrecisionMath.toDecimal(finalPrice, 6).doubleValue())
+                .subtotal(PrecisionMath.toDecimal(finalSubtotal, 2).doubleValue())
                 .measureLabel(isExiting ? ConversionUnit.UK_GAL.name() : ConversionUnit.KG.name())
                 .build();
     }

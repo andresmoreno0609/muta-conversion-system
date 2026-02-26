@@ -3,6 +3,7 @@ package com.sistem.conversion.mapper;
 import com.sistem.conversion.dto.CollectionMaterialDTO;
 import com.sistem.conversion.dto.DTOConvert;
 import com.sistem.conversion.entity.CollectionMaterial;
+import com.sistem.conversion.enums.ConversionUnit;
 import com.sistem.conversion.service.ConversionContextService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -16,7 +17,7 @@ public class CollectionMaterialMapper {
     public CollectionMaterialDTO toDTO(CollectionMaterial entity) {
         if (entity == null) return null;
 
-        DTOConvert converted = conversionService.getConvertedData(entity, true);
+        DTOConvert converted = conversionService.convert(entity, ConversionUnit.L, true);
 
         return CollectionMaterialDTO.builder()
                 .id(entity.getId().longValue())
